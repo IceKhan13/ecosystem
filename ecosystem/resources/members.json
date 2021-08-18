@@ -82,7 +82,10 @@
             "name": "qiskit-nature",
             "tier": "MAIN",
             "updated_at": 1628883441.119862,
-            "url": "https://github.com/Qiskit/qiskit-nature "
+            "url": "https://github.com/Qiskit/qiskit-nature",
+            "tests_passed": [
+                "STANDARD"
+            ]
         },
         "8": {
             "alternatives": null,
@@ -94,7 +97,10 @@
             "name": "qiskit-finance",
             "tier": "MAIN",
             "updated_at": 1628883441.120268,
-            "url": "https://github.com/Qiskit/qiskit-finance"
+            "url": "https://github.com/Qiskit/qiskit-finance",
+            "tests_passed": [
+                "STANDARD"
+            ]
         },
         "9": {
             "alternatives": null,
