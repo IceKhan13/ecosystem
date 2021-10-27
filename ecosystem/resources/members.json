@@ -209,10 +209,15 @@
             "labels": [
                 "demo"
             ],
-            "created_at": 1635277702.522329,
-            "updated_at": 1635277702.52233,
+            "created_at": 1635365198.469205,
+            "updated_at": 1635365198.469307,
             "tests_results": [],
-            "styles_results": [],
+            "styles_results": [
+                {
+                    "style_type": "pylint",
+                    "passed": true
+                }
+            ],
             "coverages_results": [],
             "tier": "COMMUNITY"
         }
