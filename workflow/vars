@@ -1,0 +1,2 @@
+echo "::set-output name=datetime::$(date +'%Y_%m_%d_%H_%M')"
+echo "::set-output name=pr_branch_name::fetch_tests_for_main_$(date +'%Y_%m_%d_%H_%M')"
