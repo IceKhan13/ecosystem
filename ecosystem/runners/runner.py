@@ -13,7 +13,7 @@ from ecosystem.models import (
     FilesTemplates,
 )
 from ecosystem.models.repository import Repository
-from ecosystem.utils import QiskitEcosystemException
+from ecosystem.exception import QiskitEcosystemException
 from ecosystem.utils import logger as ecosystem_logger
 from ecosystem.utils.utils import set_actions_output
 
@@ -75,6 +75,9 @@ class Runner:
             )
 
         if self.repo_config is not None:
+            self.logger.info(
+                "Running with configuration: {}".format(self.repo_config.to_dict())
+            )
             repo_config = self.repo_config
         elif os.path.exists(f"{self.cloned_repo_directory}/ecosystem.json"):
             self.logger.info("Configuration file exists.")
@@ -84,6 +87,15 @@ class Runner:
             repo_config = cast(PythonRepositoryConfiguration, loaded_config)
         else:
             repo_config = PythonRepositoryConfiguration.default()
+
+        # check for setup files
+        if not os.path.exists(
+            f"{self.cloned_repo_directory}/setup.py"
+        ) and not os.path.exists(f"{self.cloned_repo_directory}/setup.cfg"):
+            self.logger.warning("No setup files for repository %s", self.repo)
+            self.logger.warning("Creating default setup.py file.")
+            with open(f"{self.cloned_repo_directory}/setup.py", "w") as setup_file:
+                setup_file.write(repo_config.render_setup_file())
 
         # check for tox/.pylintrc/.coveragerc file
         for destination_file_name, renamed_file_name in zip(files, files_fault):

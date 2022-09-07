@@ -1,11 +1,10 @@
-name: Project check workflow
+name: Ecosystem | Project tests workflow
 
 on:
   #  Payload:
   #  "client_payload": {
   #    "tier": "COMMUNITY", # 'Tier of project'
   #    "branch_name": "weekly-checks-1", # 'Branch name to push changes'
-  #    "issue_id": 49, # 'Id of issue to put comments in'
   #    "repo_name": "demo-implementation", # 'Repository name'
   #    "repo_url": "https://github.com/IceKhan13/demo-implementation" # 'Repository URL'
   #  }
@@ -20,7 +19,6 @@ jobs:
       id: vars
       run: |
         echo "Running check for ${{ github.event.client_payload.repo_url }}..."
-        echo "Will be commenting in ${{ github.event.client_payload.issue_id }}..."
         echo "Will push changes to ${{ github.event.client_payload.branch_name }}..."
     - uses: actions/checkout@v2
       with:
@@ -44,6 +42,7 @@ jobs:
         tox_env: "py39"
         tier: ${{ github.event.client_payload.tier }}
         run_name: ${{ github.event.client_payload.branch_name }}
+        logs_link: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
 
     - name: Stable tests
       id: stable
@@ -54,6 +53,7 @@ jobs:
         tox_env: "py39"
         tier: ${{ github.event.client_payload.tier }}
         run_name: ${{ github.event.client_payload.branch_name }}
+        logs_link: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
 
     - name: Dev tests
       id: dev
@@ -64,26 +64,7 @@ jobs:
         tox_env: "py39"
         tier: ${{ github.event.client_payload.tier }}
         run_name: ${{ github.event.client_payload.branch_name }}
-
-    - name: Styles check
-      id: linter
-      uses: ./.github/actions/run-tests
-      with:
-        repo_url: ${{ github.event.client_payload.repo_url }}
-        check_type: "lint"
-        tox_env: "py39"
-        tier: ${{ github.event.client_payload.tier }}
-        run_name: ${{ github.event.client_payload.branch_name }}
-
-    - name: Coverage check
-      id: coverage
-      uses: ./.github/actions/run-tests
-      with:
-        repo_url: ${{ github.event.client_payload.repo_url }}
-        check_type: "coverage"
-        tox_env: "py39"
-        tier: ${{ github.event.client_payload.tier }}
-        run_name: ${{ github.event.client_payload.branch_name }}
+        logs_link: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
 
     # check if any of the tests failed
     - name: Check return
@@ -92,8 +73,6 @@ jobs:
 
         declare -a return_list=( \
           "${{ steps.standard.outputs.result }}" \
-          "${{ steps.linter.outputs.result }}" \
-          "${{ steps.coverage.outputs.result }}" \
           "${{ steps.stable.outputs.result }}" \
           "${{ steps.dev.outputs.result }}" \
         )
@@ -117,71 +96,3 @@ jobs:
         git commit -m "Tests for ${{ github.event.client_payload.repo_url }}" --allow-empty
         git pull --rebase --autostash
         git push
-        
-    - name: Create comment on failure
-      if: ${{ env.PASS_LOG == 'False' }}
-      uses: peter-evans/create-or-update-comment@v1
-      with:
-        repository: "qiskit-community/ecosystem"
-        issue-number: ${{ github.event.client_payload.issue_id }}
-        body: |
-          Failed project check ${{ github.event.client_payload.repo_url }} :warning:
-          Error see: https://github.com/qiskit-community/ecosystem/actions/runs/${{ github.run_id }}
-          If you don't fix this issue, your badge will change to grey automatically.
-
-          ### Checks Status ###
-          Linter : ${{ steps.linter.outputs.result }}
-          Coverage : ${{ steps.coverage.outputs.result }}
-          Qiskit Stable : ${{ steps.stable.outputs.result }}
-          Qiskit Dev : ${{ steps.dev.outputs.result }}
-          Standard: ${{ steps.standard.outputs.result }}
-
-          ### Logs ###
-          <details>
-          <summary>Linter</summary>
-
-          #### Error logs
-          ${{ steps.linter.outputs.error }}
-
-          #### Failed logs
-          ${{ steps.linter.outputs.fail }}
-          </details>
-          <details>
-          <summary>Coverage</summary>
-
-          #### Error logs
-          ${{ steps.coverage.outputs.error }}
-
-          #### Failed logs
-          ${{ steps.coverage.outputs.fail }}
-          </details>
-          <details>
-          <summary>Qiskit Stable</summary>
-
-          #### Error logs
-          ${{ steps.stable.outputs.error }}
-
-          #### Failed logs
-          ${{ steps.stable.outputs.fail }}
-          </details>
-          <details>
-          <summary>Qiskit Dev</summary>
-          
-          #### Qiskit depreciation logs
-          ${{ steps.dev.outputs.depreciation }}
-
-          #### Error logs
-          ${{ steps.dev.outputs.error }}
-
-          #### Failed logs
-          ${{ steps.dev.outputs.fail }}
-          </details>
-          <details>
-          <summary>Standard</summary>
-
-          #### Error logs
-          ${{ steps.standard.outputs.error }}
-
-          #### Failed logs
-          ${{ steps.standard.outputs.fail }}
-          </details>

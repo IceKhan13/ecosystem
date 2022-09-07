@@ -12,7 +12,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from ecosystem.daos import JsonDAO
 from ecosystem.models import TestResult, Tier, TestType
 from ecosystem.models.repository import Repository
-from ecosystem.models.test_results import StyleResult, CoverageResult
+from ecosystem.models.test_results import StyleResult, CoverageResult, Package
 from ecosystem.runners import PythonTestsRunner
 from ecosystem.runners.main_repos_report_runner import RepositoryActionStatusRunner
 from ecosystem.runners.python_styles_runner import PythonStyleRunner
@@ -52,7 +52,6 @@ class Manager:
     def dispatch_check_workflow(
         self,
         repo_url: str,
-        issue_id: str,
         branch_name: str,
         tier: str,
         token: str,
@@ -85,7 +84,6 @@ class Manager:
                 "client_payload": {
                     "repo_url": repo_url,
                     "repo_name": repo_name,
-                    "issue_id": issue_id,
                     "branch_name": branch_name,
                     "tier": tier,
                 },
@@ -103,28 +101,57 @@ class Manager:
             )
         return response.ok
 
-    def get_projects_by_tier(self, tier: str) -> None:
-        """Return projects by tier.
-        Args:
-            tier: tier of ecosystem
-        """
-        repositories = ",".join([repo.url for repo in self.dao.get_repos_by_tier(tier)])
-        set_actions_output([("repositories", repositories)])
+    def expose_all_project_to_actions(self):
+        """Exposes all project for github actions."""
+        repositories = []
+        tiers = []
+        for tier in Tier.non_main_tiers():
+            for repo in self.dao.get_repos_by_tier(tier):
+                if not repo.skip_tests:
+                    repositories.append(repo.url)
+                    tiers.append(repo.tier)
+        set_actions_output(
+            [("repositories", ",".join(repositories)), ("tiers", ",".join(tiers))]
+        )
 
     def update_badges(self):
         """Updates badges for projects."""
         badges_folder_path = "{}/badges".format(self.current_dir)
 
-        for project in self.dao.get_repos_by_tier("COMMUNITY"):
-            tests_passed = all(result.passed for result in project.tests_results)
-            color = "blueviolet" if tests_passed else "gray"
-            label = "Qiskit Ecosystem"
-            message = project.name
-            url = f"https://img.shields.io/static/v1?label={label}&message={message}&color={color}"
+        for tier in Tier.all():
+            for project in self.dao.get_repos_by_tier(tier):
+                tests_passed = all(result.passed for result in project.tests_results)
+                color = "blueviolet" if tests_passed else "gray"
+                label = project.name
+                message = tier
+                url = (
+                    f"https://img.shields.io/static/v1?"
+                    f"label={label}&message={message}&color={color}"
+                )
 
-            shields_request = requests.get(url)
-            with open(f"{badges_folder_path}/{project.name}.svg", "wb") as outfile:
-                outfile.write(shields_request.content)
+                shields_request = requests.get(url)
+                with open(f"{badges_folder_path}/{project.name}.svg", "wb") as outfile:
+                    outfile.write(shields_request.content)
+                    self.logger.info("Badge for %s has been updated.", project.name)
+
+    def update_stars(self):
+        """Updates start for repositories."""
+        for tier in Tier.all():
+            for project in self.dao.get_repos_by_tier(tier):
+                stars = None
+                url = project.url[:-1] if project.url[-1] == "/" else project.url
+                url_chunks = url.split("/")
+                repo = url_chunks[-1]
+                user = url_chunks[-2]
+
+                response = requests.get(f"http://api.github.com/repos/{user}/{repo}")
+                if response.ok:
+                    json_data = json.loads(response.text)
+                    stars = json_data.get("stargazers_count")
+                else:
+                    self.logger.warning("Bad response for project %s", project.url)
+                self.dao.update_stars(project.url, tier, stars)
+                self.logger.info("Updating star count for %s: %d", project.url, stars)
 
     @staticmethod
     def parser_issue(body: str) -> None:
@@ -163,6 +190,7 @@ class Manager:
         repo_alt: str,
         repo_affiliations: str,
         repo_labels: Tuple[str],
+        repo_tier: Optional[str] = None,
     ) -> None:
         """Adds repo to list of entries.
 
@@ -175,6 +203,7 @@ class Manager:
             repo_licence: repo licence
             repo_affiliations: repo university, company, ...
             repo_labels: comma separated labels
+            repo_tier: tier for repository
 
         Returns:
             JsonDAO: Integer
@@ -189,6 +218,7 @@ class Manager:
             repo_alt,
             repo_affiliations,
             list(repo_labels),
+            tier=repo_tier or Tier.COMMUNITY,
         )
         self.dao.insert(new_repo)
 
@@ -199,11 +229,10 @@ class Manager:
             str: generated readme
         """
         path = path if path is not None else self.current_dir
-        main_repos = self.dao.get_repos_by_tier(Tier.MAIN)
-        community_repos = self.dao.get_repos_by_tier(Tier.COMMUNITY)
-        readme_content = self.readme_template.render(
-            main_repos=main_repos, community_repos=community_repos
-        )
+
+        data = [(tier, self.dao.get_repos_by_tier(tier=tier)) for tier in Tier.all()]
+        readme_content = self.readme_template.render(data=data)
+
         with open(f"{path}/README.md", "w") as file:
             file.write(readme_content)
 
@@ -211,6 +240,7 @@ class Manager:
         self,
         folder_name: str,
         repo_url: str,
+        tier: str,
         test_result: Union[TestResult, StyleResult, CoverageResult],
     ) -> None:
         """Saves result to temp file.
@@ -232,13 +262,14 @@ class Manager:
                 json.dumps(
                     {
                         "repo_url": repo_url,
+                        "tier": tier,
                         "type": type(test_result).__name__,
                         "test_result": test_result.to_dict(),
                     }
                 )
             )
 
-    def process_temp_test_results_files(self, folder_name: str, tier: str) -> None:
+    def process_temp_test_results_files(self, folder_name: str) -> None:
         """Process temp test results files and store data to DB.
 
         Args:
@@ -255,6 +286,7 @@ class Manager:
             with open(path, "r") as json_temp_file:
                 json_temp_file_data = json.load(json_temp_file)
                 repo_url = json_temp_file_data.get("repo_url")
+                repo_tier = json_temp_file_data.get("tier")
                 test_type = json_temp_file_data.get("type")
                 test_result = json_temp_file_data.get("test_result")
                 self.logger.info(
@@ -266,17 +298,17 @@ class Manager:
                 if test_type == "TestResult":
                     tres = TestResult.from_dict(test_result)
                     res = self.dao.add_repo_test_result(
-                        repo_url=repo_url, tier=tier, test_result=tres
+                        repo_url=repo_url, tier=repo_tier, test_result=tres
                     )
                 elif test_type == "CoverageResult":
                     cres = CoverageResult.from_dict(test_result)
                     res = self.dao.add_repo_coverage_result(
-                        repo_url=repo_url, tier=tier, coverage_result=cres
+                        repo_url=repo_url, tier=repo_tier, coverage_result=cres
                     )
                 elif test_type == "StyleResult":
                     sres = StyleResult.from_dict(test_result)
                     res = self.dao.add_repo_style_result(
-                        repo_url=repo_url, tier=tier, style_result=sres
+                        repo_url=repo_url, tier=repo_tier, style_result=sres
                     )
                 else:
                     raise NotImplementedError(
@@ -294,11 +326,13 @@ class Manager:
         self,
         run_name: str,
         repo_url: str,
-        tier: str,  # pylint: disable=unused-argument
+        tier: str,
         python_version: str,
         test_type: str,
         ecosystem_deps: Optional[List[str]] = None,
         ecosystem_additional_commands: Optional[List[str]] = None,
+        logs_link: Optional[str] = None,
+        package_commit_hash: Optional[str] = None,
     ):
         """Runs tests using python runner.
 
@@ -310,6 +344,8 @@ class Manager:
             test_type: [dev, stable]
             ecosystem_deps: extra dependencies to install for tests
             ecosystem_additional_commands: extra commands to run before tests
+            logs_link: link to logs from gh actions
+            package_commit_hash: commit hash for package
 
         Return:
             output: log PASS
@@ -317,12 +353,18 @@ class Manager:
         """
         ecosystem_deps = ecosystem_deps or []
         ecosystem_additional_commands = ecosystem_additional_commands or []
+        repository = self.dao.get_by_url(repo_url, tier=tier)
+        repo_configuration = (
+            repository.configuration if repository is not None else None
+        )
+
         runner = PythonTestsRunner(
             repo_url,
             working_directory=self.resources_dir,
             ecosystem_deps=ecosystem_deps,
             ecosystem_additional_commands=ecosystem_additional_commands,
             python_version=python_version,
+            repo_config=repo_configuration,
         )
         terra_version, results = runner.run()
         if len(results) > 0:
@@ -337,13 +379,19 @@ class Manager:
 
             test_result = TestResult(
                 passed=passed,
-                terra_version=terra_version,
+                package=Package.TERRA,
+                package_version=terra_version,
                 test_type=test_type,
+                logs_link=logs_link,
+                package_commit_hash=package_commit_hash,
             )
             # saving results to temp files
             if run_name:
                 self._save_temp_test_result(
-                    folder_name=run_name, repo_url=repo_url, test_result=test_result
+                    folder_name=run_name,
+                    repo_url=repo_url,
+                    test_result=test_result,
+                    tier=tier,
                 )
             self.logger.info("Test results for %s: %s", repo_url, test_result)
             set_actions_output(
@@ -379,7 +427,15 @@ class Manager:
             output: log PASS
             We want to give the result of the test to the GitHub action
         """
-        runner = PythonStyleRunner(repo_url, working_directory=self.resources_dir)
+        repository = self.dao.get_by_url(repo_url, tier=tier)
+        repo_configuration = (
+            repository.configuration if repository is not None else None
+        )
+        runner = PythonStyleRunner(
+            repo_url,
+            working_directory=self.resources_dir,
+            repo_config=repo_configuration,
+        )
         _, results = runner.run()
         if len(results) > 0:
             style_result = StyleResult(
@@ -388,7 +444,10 @@ class Manager:
             # saving results to temp files
             if run_name:
                 self._save_temp_test_result(
-                    folder_name=run_name, repo_url=repo_url, test_result=style_result
+                    folder_name=run_name,
+                    repo_url=repo_url,
+                    test_result=style_result,
+                    tier=tier,
                 )
             self.logger.info("Test results for %s: %s", repo_url, style_result)
             set_actions_output([("PASS", style_result.passed)])
@@ -415,7 +474,15 @@ class Manager:
             output: log PASS
             We want to give the result of the test to the GitHub action
         """
-        runner = PythonCoverageRunner(repo_url, working_directory=self.resources_dir)
+        repository = self.dao.get_by_url(repo_url, tier=tier)
+        repo_configuration = (
+            repository.configuration if repository is not None else None
+        )
+        runner = PythonCoverageRunner(
+            repo_url,
+            working_directory=self.resources_dir,
+            repo_config=repo_configuration,
+        )
         _, results = runner.run()
         if len(results) > 0:
             coverage_result = CoverageResult(
@@ -424,7 +491,10 @@ class Manager:
             # saving results to temp files
             if run_name:
                 self._save_temp_test_result(
-                    folder_name=run_name, repo_url=repo_url, test_result=coverage_result
+                    folder_name=run_name,
+                    repo_url=repo_url,
+                    test_result=coverage_result,
+                    tier=tier,
                 )
             self.logger.info("Test results for %s: %s", repo_url, coverage_result)
             set_actions_output([("PASS", coverage_result.passed)])
@@ -438,10 +508,12 @@ class Manager:
         repo_url: str,
         tier: str = Tier.MAIN,
         python_version: str = "py39",
+        logs_link: Optional[str] = None,
     ):
         """Runs tests against dev version of qiskit.
 
         Args:
+            logs_link: link to logs of github actions run
             run_name: name of the run
             repo_url: repository url
             tier: tier of project
@@ -450,11 +522,24 @@ class Manager:
         Return:
             _run_python_tests def
         """
+        package = "qiskit-terra"
+
+        # get package commit hash
+        package_commit_hash = None
+        git_response = requests.get(
+            f"https://api.github.com/repos/qiskit/{package}/commits/main"
+        )
+        if git_response.ok:
+            commit_data = json.loads(git_response.text)
+            package_commit_hash = commit_data.get("sha")
+        else:
+            self.logger.warning("Wan't able to parse package commit hash")
+
         # hack to fix tox's inability to install proper version of
         # qiskit through github via deps configuration
         additional_commands = [
             "pip uninstall -y qiskit-terra",
-            "pip install git+https://github.com/Qiskit/qiskit-terra.git@main",
+            f"pip install git+https://github.com/Qiskit/{package}.git@main",
         ]
         return self._run_python_tests(
             run_name=run_name,
@@ -464,6 +549,8 @@ class Manager:
             test_type=TestType.DEV_COMPATIBLE,
             ecosystem_deps=[],
             ecosystem_additional_commands=additional_commands,
+            logs_link=logs_link,
+            package_commit_hash=package_commit_hash,
         )
 
     def python_stable_tests(
@@ -472,6 +559,7 @@ class Manager:
         repo_url: str,
         tier: str = Tier.MAIN,
         python_version: str = "py39",
+        logs_link: Optional[str] = None,
     ):
         """Runs tests against stable version of qiskit.
         Args:
@@ -490,6 +578,7 @@ class Manager:
             python_version=python_version,
             test_type=TestType.STABLE_COMPATIBLE,
             ecosystem_deps=["qiskit"],
+            logs_link=logs_link,
         )
 
     def python_standard_tests(
@@ -498,6 +587,7 @@ class Manager:
         repo_url: str,
         tier: str = Tier.MAIN,
         python_version: str = "py39",
+        logs_link: Optional[str] = None,
     ):
         """Runs tests with provided confiuration.
         Args:
@@ -515,6 +605,7 @@ class Manager:
             tier=tier,
             python_version=python_version,
             test_type=TestType.STANDARD,
+            logs_link=logs_link,
         )
 
     def fetch_and_update_main_tests_results(self):
@@ -562,7 +653,8 @@ class Manager:
             ).workload()
             test_result = TestResult(
                 passed=all(r.ok for r in results),
-                terra_version=terra_version,
+                package=Package.TERRA,
+                package_version=terra_version,
                 test_type=test_type,
             )
             result = self.dao.add_repo_test_result(

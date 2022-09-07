@@ -5,7 +5,7 @@ from typing import Optional, List
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from ecosystem.utils.utils import QiskitEcosystemException
+from ecosystem.exception import QiskitEcosystemException
 from .utils import JsonSerializable
 
 
@@ -93,6 +93,28 @@ class RepositoryConfiguration(JsonSerializable):
             json.dump(self.to_dict(), json_file, indent=4)
 
     @classmethod
+    def from_dict(cls, dictionary: dict):
+        if dictionary.get("language"):
+            language = LanguageConfiguration(**dictionary.get("language"))
+        else:
+            language = PythonLanguageConfiguration()
+        dictionary["language"] = language
+        config: RepositoryConfiguration = RepositoryConfiguration(**dictionary)
+        if config.language.name == Languages.PYTHON:  # pylint: disable=no-else-return
+            return PythonRepositoryConfiguration(
+                language=language,
+                dependencies_files=config.dependencies_files,
+                extra_dependencies=config.extra_dependencies,
+                tests_command=config.tests_command,
+                styles_check_command=config.styles_check_command,
+                coverages_check_command=config.coverages_check_command,
+            )
+        else:
+            raise QiskitEcosystemException(
+                f"Unsupported language configuration type: {config.language}"
+            )
+
+    @classmethod
     def load(cls, path: str) -> "RepositoryConfiguration":
         """Loads json file into object."""
         with open(path, "r") as json_file:
@@ -147,9 +169,10 @@ class PythonRepositoryConfiguration(RepositoryConfiguration):
         env = Environment(
             loader=PackageLoader("ecosystem"), autoescape=select_autoescape()
         )
-        self.tox_template = env.get_template("configured_tox.ini")
-        self.lint_template = env.get_template(".pylintrc")
-        self.cov_template = env.get_template(".coveragerc")
+        self._tox_template = env.get_template("configured_tox.ini")
+        self._lint_template = env.get_template(".pylintrc")
+        self._cov_template = env.get_template(".coveragerc")
+        self._setup_template = env.get_template("setup.py")
 
     @classmethod
     def default(cls) -> "PythonRepositoryConfiguration":
@@ -158,7 +181,7 @@ class PythonRepositoryConfiguration(RepositoryConfiguration):
             language=PythonLanguageConfiguration(),
             dependencies_files=["requirements.txt"],
             extra_dependencies=["pytest", "coverage"],
-            tests_command=["pip check", "pytest"],  # -W error::DeprecationWarning
+            tests_command=["pytest"],  # -W error::DeprecationWarning
             styles_check_command=["pylint -rn . tests"],
             coverages_check_command=[
                 "coverage3 run -m pytest",
@@ -174,7 +197,7 @@ class PythonRepositoryConfiguration(RepositoryConfiguration):
         """Renders tox template from configuration."""
         ecosystem_deps = ecosystem_deps or []
         ecosystem_additional_commands = ecosystem_additional_commands or []
-        return self.tox_template.render(
+        return self._tox_template.render(
             {
                 **self.to_dict(),
                 **{
@@ -186,8 +209,12 @@ class PythonRepositoryConfiguration(RepositoryConfiguration):
 
     def render_lint_file(self):
         """Renders .pylintrc template from configuration."""
-        return self.lint_template.render()
+        return self._lint_template.render()
 
     def render_cov_file(self):
         """Renders .coveragerc template from configuration."""
-        return self.cov_template.render()
+        return self._cov_template.render()
+
+    def render_setup_file(self):
+        """Renders default setup.py file."""
+        return self._setup_template.render()
